@@ -1,0 +1,16 @@
+(executable
+ (name server)
+ (public_name chat-server)
+ (modules server)
+ (libraries chat)
+ (preprocess
+  (pps lwt_ppx)))
+
+(executable
+ (name client)
+ (public_name chat-cli)
+ (modules client)
+ (libraries chat)
+ (preprocess
+  (pps lwt_ppx)))
+

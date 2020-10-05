@@ -1,0 +1,5 @@
+(library
+ (name chat)
+ (libraries lwt.unix mtime.clock.os)
+ (preprocess
+  (pps lwt_ppx)))
