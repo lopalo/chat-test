@@ -1,19 +1,42 @@
 open Chat
 module Msg = Messaging
 
-let run_server host port =
-  let state = Msg.State in
-  let address = Lwt_unix.ADDR_INET (Unix.inet_addr_of_string host, port) in
-  let mutex = Lwt_mutex.create () in
-  let conn_handler _ connection =
-    (* TODO: instead of the mutex, accept next connection only after the current one terminates *)
-    Lwt_mutex.with_lock mutex (fun () ->
-        Msg.connection_handler state connection)
+let establish_server state host port =
+  let open Lwt_io in
+  let listening_address =
+    Lwt_unix.ADDR_INET (Unix.inet_addr_of_string host, port)
   in
-  Lwt_io.establish_server_with_client_address address conn_handler
-
-(* TODO: delete *)
-let rec forever () = Lwt.bind (Lwt_unix.sleep 60.) (fun _ -> forever ())
+  let buffer_size = default_buffer_size () in
+  let rec accept_loop () =
+    let listening_socket =
+      Lwt_unix.socket
+        (Unix.domain_of_sockaddr listening_address)
+        Unix.SOCK_STREAM 0
+    in
+    Lwt_unix.setsockopt listening_socket Unix.SO_REUSEADDR true;
+    let%lwt () = Lwt_unix.bind listening_socket listening_address in
+    Lwt_unix.listen listening_socket 0;
+    let%lwt client_socket, _ = Lwt_unix.accept listening_socket in
+    let%lwt () = Lwt_unix.close listening_socket in
+    let close = lazy (Lwt_unix.close client_socket) in
+    let input_channel =
+      of_fd
+        ~buffer:(Lwt_bytes.create buffer_size)
+        ~mode:input
+        ~close:(fun () -> Lazy.force close)
+        client_socket
+    in
+    let output_channel =
+      of_fd
+        ~buffer:(Lwt_bytes.create buffer_size)
+        ~mode:output
+        ~close:(fun () -> Lazy.force close)
+        client_socket
+    in
+    let%lwt () = Msg.connection_handler state (input_channel, output_channel) in
+    accept_loop ()
+  in
+  accept_loop ()
 
 let () =
   let open Arg in
@@ -25,5 +48,6 @@ let () =
   in
   let usage = "chat-server [options]" in
   parse specs (fun arg -> raise @@ Bad ("Unexpected argument: " ^ arg)) usage;
-  let _server = run_server !host !port in
-  Lwt_main.run (forever ())
+  let state = Msg.State in
+  let server = establish_server state !host !port in
+  Lwt_main.run server

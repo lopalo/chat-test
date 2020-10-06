@@ -88,7 +88,25 @@ let rec message_writer channel id =
 
 let connection_handler _state (input, output) =
   let%lwt () = Ui.write_line "Connected" in
-  let writer = message_writer output Int64.zero in
-  let%lwt () = message_reader input output in
+  let writer =
+    try%lwt message_writer output Int64.zero with
+    | Unix.Unix_error (Unix.EBADF, _, _)
+    | Unix.Unix_error (Unix.ENOTCONN, _, _)
+    | Unix.Unix_error (Unix.EPIPE, _, _)
+    | Unix.Unix_error (Unix.ECONNREFUSED, _, _)
+    | Unix.Unix_error (Unix.ECONNRESET, _, _)
+    | Unix.Unix_error (Unix.ECONNABORTED, _, _) ->
+        Lwt.return_unit
+  in
+  let%lwt () =
+    try%lwt message_reader input output with
+    | End_of_file
+    | Unix.Unix_error (Unix.EBADF, _, _)
+    | Unix.Unix_error (Unix.ENOTCONN, _, _)
+    | Unix.Unix_error (Unix.ECONNREFUSED, _, _)
+    | Unix.Unix_error (Unix.ECONNRESET, _, _)
+    | Unix.Unix_error (Unix.ECONNABORTED, _, _) ->
+        Lwt.return_unit
+  in
   Lwt.cancel writer;
   Ui.write_line "Disconnected"
