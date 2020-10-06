@@ -1,10 +1,10 @@
 open Chat
+module Msg = Messaging
 
 let run_client host port =
   let%lwt addresses = Lwt_unix.getaddrinfo host port [] in
   let sockaddr = (List.hd addresses).ai_addr in
-  let state = Messaging.State in
-  Lwt_io.with_connection sockaddr @@ Messaging.connection_handler state
+  Lwt_io.with_connection sockaddr @@ Msg.(connection_handler @@ make_state ())
 
 let () =
   let open Arg in

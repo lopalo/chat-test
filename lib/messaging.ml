@@ -1,5 +1,16 @@
 open Lwt.Infix
 
+type state = {mutable current_message_id : Int64.t}
+
+type message =
+  | Message of
+      { id : Int64.t;
+        timestamp : Int64.t;
+        payload : string }
+  | Ack of
+      { id : Int64.t;
+        message_timestamp : Int64.t }
+
 let fmt = Printf.sprintf
 
 let write_uint8 channel i = Char.unsafe_chr i |> Lwt_io.write_char channel
@@ -20,16 +31,17 @@ let read_payload channel =
   Lwt_io.read_into_exactly channel buffer 0 length
   >|= fun () -> Bytes.unsafe_to_string buffer
 
-type state = State
+let print_line line =
+  Lwt_io.(
+    let%lwt () = write_line stdout line in
+    flush stdout)
 
-type message =
-  | Message of
-      { id : Int64.t;
-        timestamp : Int64.t;
-        payload : string }
-  | Ack of
-      { id : Int64.t;
-        message_timestamp : Int64.t }
+let print_prompt {current_message_id} =
+  Lwt_io.(
+    let%lwt () = write stdout (fmt "#%Li>> " current_message_id) in
+    flush stdout)
+
+let read_line () = Lwt_io.(read_line stdin)
 
 let write_message channel msg =
   Lwt_io.atomic
@@ -61,35 +73,39 @@ let read_message channel =
       Lwt.return (Ack {id; message_timestamp})
   | tag -> Lwt.fail (Failure ("Unknown message tag: " ^ string_of_int tag))
 
-let rec message_reader input_channel output_channel =
+let rec message_reader state input_channel output_channel =
   let%lwt () =
     match%lwt read_message input_channel with
     | Message {payload; id; timestamp} ->
         let%lwt () =
           write_message output_channel (Ack {id; message_timestamp = timestamp})
         in
-        let%lwt () = Ui.write_line "" in
-        Ui.write_line (fmt "Received: " ^ payload)
+        print_line (fmt "\nReceived: " ^ payload)
     | Ack {id; message_timestamp} ->
-        let open Int64 in
-        let rtt_ns = sub (Mtime_clock.elapsed_ns ()) message_timestamp in
-        let rtt_ms = div rtt_ns (of_int 1_000_000) in
-        Ui.write_line (fmt "Ack #%Li, RTT: %Li ms" id rtt_ms)
+        let rtt_ns = Int64.sub (Mtime_clock.elapsed_ns ()) message_timestamp in
+        let rtt_ms = Int64.to_float rtt_ns /. 1_000_000.0 in
+        print_line (fmt "Ack #%Li, RTT: %.2f ms" id rtt_ms)
   in
-  message_reader input_channel output_channel
+  let%lwt () = print_prompt state in
+  message_reader state input_channel output_channel
 
-let rec message_writer channel id =
-  let%lwt payload = Ui.read_line () in
-  let%lwt () = Ui.write_line (fmt "Sent #%Li" id) in
+let rec message_writer state channel =
+  let%lwt payload = read_line () in
+  let id = state.current_message_id in
+  state.current_message_id <- Int64.succ id;
   let timestamp = Mtime_clock.elapsed_ns () in
   let msg = Message {id; timestamp; payload} in
   let%lwt () = write_message channel msg in
-  message_writer channel (Int64.succ id)
+  let%lwt () = print_line (fmt "Sent #%Li" id) in
+  message_writer state channel
 
-let connection_handler _state (input, output) =
-  let%lwt () = Ui.write_line "Connected" in
+let make_state () = {current_message_id = Int64.zero}
+
+let connection_handler state (input, output) =
+  let%lwt () = print_line "Connected" in
+  let%lwt () = print_prompt state in
   let writer =
-    try%lwt message_writer output Int64.zero with
+    try%lwt message_writer state output with
     | Unix.Unix_error (Unix.EBADF, _, _)
     | Unix.Unix_error (Unix.ENOTCONN, _, _)
     | Unix.Unix_error (Unix.EPIPE, _, _)
@@ -99,7 +115,7 @@ let connection_handler _state (input, output) =
         Lwt.return_unit
   in
   let%lwt () =
-    try%lwt message_reader input output with
+    try%lwt message_reader state input output with
     | End_of_file
     | Unix.Unix_error (Unix.EBADF, _, _)
     | Unix.Unix_error (Unix.ENOTCONN, _, _)
@@ -108,5 +124,4 @@ let connection_handler _state (input, output) =
     | Unix.Unix_error (Unix.ECONNABORTED, _, _) ->
         Lwt.return_unit
   in
-  Lwt.cancel writer;
-  Ui.write_line "Disconnected"
+  Lwt.cancel writer; print_line "Disconnected"

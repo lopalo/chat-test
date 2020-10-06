@@ -48,6 +48,5 @@ let () =
   in
   let usage = "chat-server [options]" in
   parse specs (fun arg -> raise @@ Bad ("Unexpected argument: " ^ arg)) usage;
-  let state = Msg.State in
-  let server = establish_server state !host !port in
+  let server = establish_server (Msg.make_state ()) !host !port in
   Lwt_main.run server
